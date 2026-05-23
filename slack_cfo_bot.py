@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 # Configuration
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-MANUS_API_KEY = os.environ.get("MANUS_API_KEY")
+MANUS_API_KEY = "sk-Gf2BwROtSJvPEaOsDNxGuqt6Dilvc-LqjFPUt0gk7S9aQrRn3OhKp4egwdrB0ARqIfRP7oIW7Rf15AnsTUfrhIIjvjPn"
 MANUS_PROJECT_ID = os.environ.get("MANUS_PROJECT_ID", "ZMYDA6qbig27FWCA99ZGtK")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 
