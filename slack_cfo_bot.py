@@ -15,12 +15,16 @@ app = Flask(__name__)
 
 # Configuration
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-MANUS_API_KEY = "sk-Gf2BwROtSJvPEaOsDNxGuqt6Dilvc-LqjFPUt0gk7S9aQrRn3OhKp4egwdrB0ARqIfRP7oIW7Rf15AnsTUfrhIIjvjPn"
+MANUS_API_KEY = os.environ.get("MANUS_API_KEY")
 MANUS_PROJECT_ID = os.environ.get("MANUS_PROJECT_ID", "ZMYDA6qbig27FWCA99ZGtK")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 
 # Store user task mappings
 user_tasks = {}
+
+print(f"[INIT] SLACK_BOT_TOKEN set: {bool(SLACK_BOT_TOKEN)}")
+print(f"[INIT] MANUS_API_KEY set: {bool(MANUS_API_KEY)}")
+print(f"[INIT] MANUS_PROJECT_ID: {MANUS_PROJECT_ID}")
 
 
 def send_slack_message(channel, text):
@@ -37,9 +41,11 @@ def send_slack_message(channel, text):
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
-        return response.json().get("ok", False)
+        result = response.json().get("ok", False)
+        print(f"[SLACK] Message sent to {channel}: {result}")
+        return result
     except Exception as e:
-        print(f"Error sending Slack message: {e}")
+        print(f"[ERROR] Error sending Slack message: {e}")
         return False
 
 
@@ -57,13 +63,26 @@ def create_manus_task(user_id, message_text):
         }
     }
     
+    print(f"[MANUS] Creating task with API key: {MANUS_API_KEY[:20] if MANUS_API_KEY else 'NONE'}...")
+    print(f"[MANUS] Project ID: {MANUS_PROJECT_ID}")
+    print(f"[MANUS] Message: {message_text}")
+    
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
+        print(f"[MANUS] Response status: {response.status_code}")
+        print(f"[MANUS] Response body: {response.text}")
+        
         data = response.json()
         if data.get("ok"):
-            return data.get("data", {}).get("task_id")
+            task_id = data.get("data", {}).get("task_id")
+            print(f"[MANUS] Task created successfully: {task_id}")
+            return task_id
+        else:
+            print(f"[MANUS] API returned error: {data}")
     except Exception as e:
-        print(f"Error creating Manus task: {e}")
+        print(f"[ERROR] Exception creating Manus task: {e}")
+        import traceback
+        traceback.print_exc()
     
     return None
 
@@ -84,9 +103,11 @@ def send_manus_message(task_id, message_text):
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
-        return response.json().get("ok", False)
+        result = response.json().get("ok", False)
+        print(f"[MANUS] Message sent to task {task_id}: {result}")
+        return result
     except Exception as e:
-        print(f"Error sending Manus message: {e}")
+        print(f"[ERROR] Error sending Manus message: {e}")
         return False
 
 
@@ -101,9 +122,11 @@ def get_task_messages(task_id):
         response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         if data.get("ok"):
-            return data.get("data", {}).get("messages", [])
+            messages = data.get("data", {}).get("messages", [])
+            print(f"[MANUS] Retrieved {len(messages)} messages from task {task_id}")
+            return messages
     except Exception as e:
-        print(f"Error getting Manus messages: {e}")
+        print(f"[ERROR] Error getting Manus messages: {e}")
     
     return []
 
@@ -112,7 +135,10 @@ def get_latest_assistant_message(messages):
     """Extract latest assistant response"""
     for msg in reversed(messages):
         if msg.get("role") == "assistant":
-            return msg.get("content", "")
+            content = msg.get("content", "")
+            print(f"[MANUS] Found assistant response: {content[:100]}...")
+            return content
+    print("[MANUS] No assistant message found")
     return None
 
 
@@ -121,41 +147,52 @@ def wait_for_cfo_response(task_id, channel, max_wait=60):
     start_time = time.time()
     last_count = 0
     
+    print(f"[WAIT] Waiting for response on task {task_id}...")
+    
     while time.time() - start_time < max_wait:
         messages = get_task_messages(task_id)
         
         if len(messages) > last_count:
             response = get_latest_assistant_message(messages)
             if response:
+                print(f"[WAIT] Got response, sending to Slack...")
                 send_slack_message(channel, response)
                 return
             last_count = len(messages)
         
         time.sleep(1)
     
+    print(f"[WAIT] Timeout waiting for response")
     send_slack_message(channel, "⏱️ CFO is taking longer than expected. Please try again.")
 
 
 def handle_user_message(user_id, channel, text):
     """Process user message and route to CFO"""
     
+    print(f"[HANDLER] Processing message from {user_id} in {channel}: {text}")
+    
     # Check if user has existing task
     task_id = user_tasks.get(user_id)
     
     if not task_id:
         # Create new task
+        print(f"[HANDLER] No existing task for {user_id}, creating new one...")
         send_slack_message(channel, "🤖 Creating CFO session...")
         task_id = create_manus_task(user_id, text)
         
         if not task_id:
+            print(f"[HANDLER] Failed to create task for {user_id}")
             send_slack_message(channel, "❌ Failed to create CFO session. Please try again.")
             return
         
         user_tasks[user_id] = task_id
+        print(f"[HANDLER] Task created: {task_id}")
     else:
         # Send to existing task
+        print(f"[HANDLER] Sending to existing task {task_id}...")
         success = send_manus_message(task_id, text)
         if not success:
+            print(f"[HANDLER] Failed to send message to task {task_id}")
             send_slack_message(channel, "❌ Failed to send message. Please try again.")
             return
     
@@ -171,22 +208,28 @@ def slack_events():
     """Handle Slack events"""
     data = request.json
     
+    print(f"[SLACK] Received event: {data.get('type')}")
+    
     # Slack URL verification
     if data.get("type") == "url_verification":
+        print("[SLACK] URL verification challenge")
         return {"challenge": data.get("challenge")}
     
     # Handle events
     if data.get("type") == "event_callback":
         event = data.get("event", {})
         
-        # Handle messages
+        # Handle messages (including direct messages to app)
         if event.get("type") == "message" and not event.get("bot_id"):
             user_id = event.get("user")
-            channel = event.get("channel")
+            # For direct messages to apps, use channel or fall back to user ID
+            channel = event.get("channel") or event.get("user")
             text = event.get("text", "").strip()
             
+            print(f"[SLACK] Message event: user={user_id}, channel={channel}, text={text[:50]}")
+            print(f"[SLACK] DEBUG - Full event: {event}")
+            
             if user_id and channel and text:
-                print(f"Message from {user_id}: {text}")
                 handle_user_message(user_id, channel, text)
         
         # Handle app mentions
@@ -195,11 +238,12 @@ def slack_events():
             channel = event.get("channel")
             text = event.get("text", "").strip()
             
+            print(f"[SLACK] Mention event: user={user_id}, channel={channel}")
+            
             # Remove bot mention
             text = text.replace(f"<@U{user_id}>", "").strip()
             
             if user_id and channel and text:
-                print(f"Mention from {user_id}: {text}")
                 handle_user_message(user_id, channel, text)
     
     return {"ok": True}
@@ -211,14 +255,24 @@ def health():
     return {"status": "ok"}
 
 
+@app.route("/debug", methods=["GET"])
+def debug():
+    """Debug endpoint to check environment variables"""
+    return {
+        "slack_bot_token": "set" if SLACK_BOT_TOKEN else "MISSING",
+        "manus_api_key": "set" if MANUS_API_KEY else "MISSING",
+        "manus_project_id": MANUS_PROJECT_ID,
+    }
+
+
 if __name__ == "__main__":
     # Verify required env vars
     if not all([SLACK_BOT_TOKEN, MANUS_API_KEY]):
-        print("❌ Missing required environment variables")
+        print("[ERROR] Missing required environment variables")
         exit(1)
     
-    print("✅ Starting Slack CFO Bot v2...")
-    print(f"📦 Project ID: {MANUS_PROJECT_ID}")
+    print("[INIT] ✅ Starting Slack CFO Bot v2...")
+    print(f"[INIT] 📦 Project ID: {MANUS_PROJECT_ID}")
     
     # Run Flask app
     app.run(host="0.0.0.0", port=5000, debug=False)
